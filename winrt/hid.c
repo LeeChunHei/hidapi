@@ -825,138 +825,139 @@ HID_API_EXPORT hid_device * HID_API_CALL hid_open(unsigned short vendor_id, unsi
 
 HID_API_EXPORT hid_device * HID_API_CALL hid_open_path(const char *path)
 {
-	hid_device *dev;
+	hid_device* dev;
 	HIDP_CAPS caps;
 	PHIDP_PREPARSED_DATA pp_data = NULL;
 	BOOLEAN res;
 	NTSTATUS nt_res;
+	HRESULT hr;
+	HSTRING_HEADER hstring_header;
+	HSTRING hstring;
+	WCHAR wstr[512];
 
 	if (hid_init() < 0) {
 		return NULL;
 	}
-
 	dev = new_hid_device();
 
 	/* Open a handle to the device */
-	dev->device_handle = open_device(path, TRUE);
+	mbstate_t convert_ret;
+	mbsrtowcs_s(NULL, wstr, 512, &path, 512, &convert_ret);
+	hr = WindowsCreateStringReferenceFunc(wstr, (UINT32)wcslen(wstr), &hstring_header, &hstring);
+	__FIAsyncOperation_1_Windows__CDevices__CHumanInterfaceDevice__CHidDevice* async_hid_dev;
+	WindowsDevicesHumanInterfaceDeviceHidDeviceStatics->lpVtbl->FromIdAsync(WindowsDevicesHumanInterfaceDeviceHidDeviceStatics, hstring, FileAccessMode_ReadWrite, &async_hid_dev);
+	AsyncOperationCompletedHandler* async_hid_complete_handle = create_complete_handle(&IIDAsyncOperationCompletedHandlerHidDevice);
+	hr = async_hid_dev->lpVtbl->put_Completed(async_hid_dev, async_hid_complete_handle);
+	WaitForSingleObject(async_hid_complete_handle->event, INFINITE);
+	do
+	{
+		hr = async_hid_dev->lpVtbl->GetResults(async_hid_dev, &dev->device_handle);
+	} while (!SUCCEEDED(hr));
+	destroy_complete_handle(async_hid_complete_handle);
 
 	/* Check validity of write_handle. */
-	if (dev->device_handle == INVALID_HANDLE_VALUE) {
-		/* System devices, such as keyboards and mice, cannot be opened in
-		   read-write mode, because the system takes exclusive control over
-		   them.  This is to prevent keyloggers.  However, feature reports
-		   can still be sent and received.  Retry opening the device, but
-		   without read/write access. */
-		dev->device_handle = open_device(path, FALSE);
-
+	if (dev->device_handle == NULL)
+	{
+		WindowsDevicesHumanInterfaceDeviceHidDeviceStatics->lpVtbl->FromIdAsync(WindowsDevicesHumanInterfaceDeviceHidDeviceStatics, hstring, FileAccessMode_Read, &async_hid_dev);
+		AsyncOperationCompletedHandler* async_hid_complete_handle = create_complete_handle(&IIDAsyncOperationCompletedHandlerHidDevice);
+		hr = async_hid_dev->lpVtbl->put_Completed(async_hid_dev, async_hid_complete_handle);
+		WaitForSingleObject(async_hid_complete_handle->event, INFINITE);
+		do
+		{
+			hr = async_hid_dev->lpVtbl->GetResults(async_hid_dev, &dev->device_handle);
+		} while (!SUCCEEDED(hr));
+		destroy_complete_handle(async_hid_complete_handle);
 		/* Check the validity of the limited device_handle. */
-		if (dev->device_handle == INVALID_HANDLE_VALUE) {
+		if (dev->device_handle == NULL) {
 			/* Unable to open the device, even without read-write mode. */
 			register_error(dev, "CreateFile");
 			goto err;
 		}
 	}
 
-	/* Set the Input Report buffer size to 64 reports. */
-	res = HidD_SetNumInputBuffers(dev->device_handle, 64);
-	if (!res) {
-		register_error(dev, "HidD_SetNumInputBuffers");
-		goto err;
-	}
-
 	/* Get the Input Report length for the device. */
-	res = HidD_GetPreparsedData(dev->device_handle, &pp_data);
-	if (!res) {
-		register_error(dev, "HidD_GetPreparsedData");
-		goto err;
+	UINT16 usage_page, usage_id;
+	dev->device_handle->lpVtbl->get_UsagePage(dev->device_handle, &usage_page);
+	dev->device_handle->lpVtbl->get_UsageId(dev->device_handle, &usage_id);
+	__FIVectorView_1_Windows__CDevices__CHumanInterfaceDevice__CHidNumericControlDescription* input_report_description, * output_report_description;
+	UINT32 input_report_description_size, output_report_description_size;
+	dev->device_handle->lpVtbl->GetNumericControlDescriptions(dev->device_handle, HidReportType_Input, usage_page, usage_id, &input_report_description);
+	dev->device_handle->lpVtbl->GetNumericControlDescriptions(dev->device_handle, HidReportType_Output, usage_page, usage_id, &output_report_description);
+	input_report_description->lpVtbl->get_Size(input_report_description, &input_report_description_size);
+	output_report_description->lpVtbl->get_Size(output_report_description, &output_report_description_size);
+	if (input_report_description)
+	{
+		__x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidNumericControlDescription* description;
+		input_report_description->lpVtbl->GetAt(input_report_description, 0, &description);
+		description->lpVtbl->get_ReportSize(description, &dev->input_report_length);
 	}
-	nt_res = HidP_GetCaps(pp_data, &caps);
-	if (nt_res != HIDP_STATUS_SUCCESS) {
-		register_error(dev, "HidP_GetCaps");	
-		goto err_pp_data;
+	if (output_report_description)
+	{
+		__x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidNumericControlDescription* description;
+		output_report_description->lpVtbl->GetAt(output_report_description, 0, &description);
+		description->lpVtbl->get_ReportSize(description, &dev->output_report_length);
 	}
-	dev->output_report_length = caps.OutputReportByteLength;
-	dev->input_report_length = caps.InputReportByteLength;
-	dev->feature_report_length = caps.FeatureReportByteLength;
-	HidD_FreePreparsedData(pp_data);
 
-	dev->read_buf = (char*) malloc(dev->input_report_length);
+	dev->read_buf = (char*)malloc(dev->input_report_length);
+	dev->received_event_handle = create_event_handler_hid_report_received(dev);
+	dev->device_handle->lpVtbl->add_InputReportReceived(dev->device_handle, dev->received_event_handle, &dev->read_event_token);
 
 	return dev;
 
-err_pp_data:
-		HidD_FreePreparsedData(pp_data);
-err:	
-		free_hid_device(dev);
-		return NULL;
+err:
+	free_hid_device(dev);
+	return NULL;
 }
 
 int HID_API_EXPORT HID_API_CALL hid_write(hid_device *dev, const unsigned char *data, size_t length)
 {
-	DWORD bytes_written = 0;
-	int function_result = -1;
-	BOOL res;
-	BOOL overlapped = FALSE;
+	HRESULT hr;
+	UINT32 function_result = 0;
 
-	unsigned char *buf;
-
-	if (!data || (length==0)) {
-		register_error(dev, "Zero length buffer");
-		return function_result;
+	__x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidOutputReport* output_report;
+	__x_ABI_CWindows_CStorage_CStreams_CIDataWriter* data_writer;
+	__x_ABI_CWindows_CStorage_CStreams_CIBuffer* buffer;
+	__FIAsyncOperation_1_UINT32* send_async_operation;
+	AsyncOperationCompletedHandler* async_complete_handle;
+	hr = dev->device_handle->lpVtbl->CreateOutputReportById(dev->device_handle, data[0], &output_report);
+	if (SUCCEEDED(hr) || output_report == NULL)
+	{
+		/* CreateOutputReport failed. Return error. */
+		register_error(dev, "CreateOutputReport");
+		return -1;
 	}
-
-	/* Make sure the right number of bytes are passed to WriteFile. Windows
-	   expects the number of bytes which are in the _longest_ report (plus
-	   one for the report number) bytes even if the data is a report
-	   which is shorter than that. Windows gives us this value in
-	   caps.OutputReportByteLength. If a user passes in fewer bytes than this,
-	   use cached temporary buffer which is the proper size. */
-	if (length >= dev->output_report_length) {
-		/* The user passed the right number of bytes. Use the buffer as-is. */
-		buf = (unsigned char *) data;
-	} else {
-		if (dev->write_buf == NULL)
-			dev->write_buf = (unsigned char *) malloc(dev->output_report_length);
-		buf = dev->write_buf;
-		memcpy(buf, data, length);
-		memset(buf + length, 0, dev->output_report_length - length);
-		length = dev->output_report_length;
+	data_writer = create_datawriter();
+	if (data_writer == NULL)
+	{
+		output_report->lpVtbl->Release(output_report);
+		return -1;
 	}
-
-	res = WriteFile(dev->device_handle, buf, (DWORD) length, NULL, &dev->write_ol);
-	
-	if (!res) {
-		if (GetLastError() != ERROR_IO_PENDING) {
-			/* WriteFile() failed. Return error. */
-			register_error(dev, "WriteFile");
-			goto end_of_function;
-		}
-		overlapped = TRUE;
+	data_writer->lpVtbl->WriteBytes(data_writer, length, data);
+	data_writer->lpVtbl->DetachBuffer(data_writer, &buffer);
+	output_report->lpVtbl->put_Data(output_report, buffer);
+	dev->device_handle->lpVtbl->SendOutputReportAsync(dev->device_handle, output_report, &send_async_operation);
+	async_complete_handle = create_complete_handle(&IIDAsyncOperationCompletedHandlerUint32);
+	send_async_operation->lpVtbl->put_Completed(send_async_operation, async_complete_handle);
+	if (WaitForSingleObject(async_complete_handle->event, 1000) != WAIT_OBJECT_0) {
+		send_async_operation->lpVtbl->Release(send_async_operation);
+		destroy_complete_handle(async_complete_handle);
+		buffer->lpVtbl->Release(buffer);
+		data_writer->lpVtbl->Release(data_writer);
+		output_report->lpVtbl->Release(output_report);
+		/* There was a Timeout. */
+		register_error(dev, "SendOutputReport/WaitForSingleObject Timeout");
+		return -1;
 	}
+	do
+	{
+		hr = send_async_operation->lpVtbl->GetResults(send_async_operation, &function_result);
+	} while (!SUCCEEDED(hr));
+	send_async_operation->lpVtbl->Release(send_async_operation);
+	destroy_complete_handle(async_complete_handle);
+	buffer->lpVtbl->Release(buffer);
+	data_writer->lpVtbl->Release(data_writer);
+	output_report->lpVtbl->Release(output_report);
 
-	if (overlapped) {
-		/* Wait for the transaction to complete. This makes
-		   hid_write() synchronous. */
-		res = WaitForSingleObject(dev->write_ol.hEvent, 1000);
-		if (res != WAIT_OBJECT_0) {
-			/* There was a Timeout. */
-			register_error(dev, "WriteFile/WaitForSingleObject Timeout");
-			goto end_of_function;
-		}
-
-		/* Get the result. */
-		res = GetOverlappedResult(dev->device_handle, &dev->write_ol, &bytes_written, FALSE/*wait*/);
-		if (res) {
-			function_result = bytes_written;
-		}
-		else {
-			/* The Write operation failed. */
-			register_error(dev, "WriteFile");
-			goto end_of_function;
-		}
-	}
-
-end_of_function:
 	return function_result;
 }
 
