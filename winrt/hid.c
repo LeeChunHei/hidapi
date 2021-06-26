@@ -1054,45 +1054,35 @@ int HID_API_EXPORT HID_API_CALL hid_send_feature_report(hid_device *dev, const u
 
 int HID_API_EXPORT HID_API_CALL hid_get_feature_report(hid_device *dev, unsigned char *data, size_t length)
 {
-	BOOL res;
-#if 0
-	res = HidD_GetFeature(dev->device_handle, data, length);
-	if (!res) {
-		register_error(dev, "HidD_GetFeature");
-		return -1;
-	}
-	return 0; /* HidD_GetFeature() doesn't give us an actual length, unfortunately */
-#else
-	DWORD bytes_returned;
+	HRESULT hr;
+	size_t byte_read;
+	__FIAsyncOperation_1_Windows__CDevices__CHumanInterfaceDevice__CHidFeatureReport* async_feature_report;
+	AsyncOperationCompletedHandler* async_operation_complete_handler;
+	__x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidFeatureReport* feature_report;
+	__x_ABI_CWindows_CStorage_CStreams_CIBuffer* buffer;
+	__x_ABI_CWindows_CStorage_CStreams_CIDataReader* data_reader;
 
-	OVERLAPPED ol;
-	memset(&ol, 0, sizeof(ol));
+	dev->device_handle->lpVtbl->GetFeatureReportByIdAsync(dev->device_handle, data[0], &async_feature_report);
+	async_operation_complete_handler = create_complete_handle(&IIDAsyncOperationCompletedHandlerHidFeatureReport);
+	async_feature_report->lpVtbl->put_Completed(async_feature_report, async_operation_complete_handler);
+	WaitForSingleObject(async_operation_complete_handler->event, INFINITE);
+	do
+	{
+		hr = async_feature_report->lpVtbl->GetResults(async_feature_report, &feature_report);
+	} while (!SUCCEEDED(hr));
+	feature_report->lpVtbl->get_Data(feature_report, &buffer);
+	WindowsStorageStreamsIDataReaderStatics->lpVtbl->FromBuffer(WindowsStorageStreamsIDataReaderStatics, buffer, &data_reader);
+	buffer->lpVtbl->get_Length(buffer, &byte_read);
+	byte_read = MIN(byte_read, length);
+	data_reader->lpVtbl->ReadBytes(data_reader, byte_read, data);
 
-	res = DeviceIoControl(dev->device_handle,
-		IOCTL_HID_GET_FEATURE,
-		data, (DWORD) length,
-		data, (DWORD) length,
-		&bytes_returned, &ol);
+	data_reader->lpVtbl->Release(data_reader);
+	buffer->lpVtbl->Release(buffer);
+	feature_report->lpVtbl->Release(feature_report);
+	destroy_complete_handle(async_operation_complete_handler);
+	async_feature_report->lpVtbl->Release(async_feature_report);
 
-	if (!res) {
-		if (GetLastError() != ERROR_IO_PENDING) {
-			/* DeviceIoControl() failed. Return error. */
-			register_error(dev, "Send Feature Report DeviceIoControl");
-			return -1;
-		}
-	}
-
-	/* Wait here until the write is done. This makes
-	   hid_get_feature_report() synchronous. */
-	res = GetOverlappedResult(dev->device_handle, &ol, &bytes_returned, TRUE/*wait*/);
-	if (!res) {
-		/* The operation failed. */
-		register_error(dev, "Send Feature Report GetOverLappedResult");
-		return -1;
-	}
-
-	return bytes_returned;
-#endif
+	return byte_read;
 }
 
 
