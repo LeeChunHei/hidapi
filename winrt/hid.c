@@ -324,6 +324,212 @@ static int lookup_functions()
 }
 #endif
 
+static __x_ABI_CWindows_CStorage_CStreams_CIDataWriter* create_datawriter()
+{
+	__x_ABI_CWindows_CStorage_CStreams_CIDataWriter* ptr;
+	HRESULT hr;
+	HSTRING_HEADER namespace_string_header;
+	HSTRING namespace_string;
+	PCWSTR namespace = L"Windows.Storage.Streams.DataWriter";
+	hr = WindowsCreateStringReferenceFunc(namespace, (UINT32)wcslen(namespace), &namespace_string_header, &namespace_string);
+	if (SUCCEEDED(hr)) {
+		hr = RoActivateInstanceFunc(namespace_string, &ptr);
+		if (SUCCEEDED(hr)) {
+			return ptr;
+		}
+		printf("Couldn't find Windows.Storage.Streams.DataWriter: 0x%x\n", hr);
+	}
+	return NULL;
+}
+
+static const IID IIDAsyncOperationCompletedHandlerDeviceInformationCollection = { 0x4a458732, 0x527e, 0x5c73, { 0x9a, 0x68, 0xa7, 0x3d, 0xa3, 0x70, 0xf7, 0x82 } };
+static const IID IIDAsyncOperationCompletedHandlerHidDevice = { 0xb0e8e149, 0x0cb6, 0x55a7, { 0xbc, 0xc1, 0xd9, 0x96, 0x32, 0x4d, 0x65, 0xc4 } };
+static const IID IIDAsyncOperationCompletedHandlerUint32 = { 0x9343b6e7, 0xe3d2, 0x5e4a, { 0xab, 0x2d, 0x2b, 0xce, 0x49, 0x19, 0xa6, 0xa4 } };
+static const IID IIDAsyncOperationCompletedHandlerHidFeatureReport = { 0xdb643555, 0x3d16, 0x57fe, { 0xb7, 0xef, 0x2b, 0xdb, 0xd7, 0x19, 0xfd, 0xbf } };
+
+typedef struct
+{
+	BEGIN_INTERFACE
+		HRESULT(STDMETHODCALLTYPE* QueryInterface)(void* This, REFIID riid, void** ppvObject);
+	ULONG(STDMETHODCALLTYPE* AddRef)(void* This);
+	ULONG(STDMETHODCALLTYPE* Release)(void* This);
+	HRESULT(STDMETHODCALLTYPE* Invoke)(void* This, void* asyncInfo, AsyncStatus asyncStatus);
+	END_INTERFACE
+} AsyncOperationCompletedHandlerVtbl;
+
+typedef struct
+{
+	CONST_VTBL AsyncOperationCompletedHandlerVtbl* lpVtbl;
+} AsyncOperationCompletedHandlerHandler;
+
+typedef struct
+{
+	AsyncOperationCompletedHandlerHandler handler;
+	IID async_iid;
+	HANDLE event;
+} AsyncOperationCompletedHandler;
+
+static HRESULT STDMETHODCALLTYPE async_complete_handle_query_interface(void* This, REFIID riid, void** ppvObject)
+{
+	AsyncOperationCompletedHandler* handle = (AsyncOperationCompletedHandler*)This;
+	if (!ppvObject) {
+		return E_INVALIDARG;
+	}
+
+	*ppvObject = NULL;
+	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &handle->async_iid)) {
+		*ppvObject = This;
+		return S_OK;
+	}
+	return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE async_complete_handle_add_ref(void* This)
+{
+	return 1;
+}
+
+static ULONG STDMETHODCALLTYPE async_complete_handle_release(void* This)
+{
+	return 1;
+}
+
+static HRESULT STDMETHODCALLTYPE async_complete_handle_invoke(void* This,
+	void* asyncInfo,
+	AsyncStatus asyncStatus)
+{
+	AsyncOperationCompletedHandler* handle = (AsyncOperationCompletedHandler*)This;
+	SetEvent(handle->event);
+	return S_OK;
+}
+
+static AsyncOperationCompletedHandler* create_complete_handle(const IID* iid)
+{
+	AsyncOperationCompletedHandler* ptr;
+	ptr = (AsyncOperationCompletedHandler*)calloc(1, sizeof(AsyncOperationCompletedHandler));
+	if (ptr)
+	{
+		ptr->event = CreateEvent(NULL, FALSE, FALSE, NULL);
+		if (ptr->event)
+		{
+			ptr->handler.lpVtbl = (AsyncOperationCompletedHandlerVtbl*)calloc(1, sizeof(AsyncOperationCompletedHandlerVtbl));
+			if (ptr->handler.lpVtbl)
+			{
+				ptr->handler.lpVtbl->QueryInterface = async_complete_handle_query_interface;
+				ptr->handler.lpVtbl->AddRef = async_complete_handle_add_ref;
+				ptr->handler.lpVtbl->Release = async_complete_handle_release;
+				ptr->handler.lpVtbl->Invoke = async_complete_handle_invoke;
+				ptr->async_iid = *iid;
+				return ptr;
+			}
+			else
+			{
+				CloseHandle(ptr->event);
+				free(ptr);
+			}
+		}
+		else
+		{
+			free(ptr);
+		}
+	}
+	return NULL;
+}
+
+static void destroy_complete_handle(AsyncOperationCompletedHandler* ptr)
+{
+	free(ptr->handler.lpVtbl);
+	CloseHandle(ptr->event);
+	free(ptr);
+}
+
+typedef struct
+{
+	__FITypedEventHandler_2_Windows__CDevices__CHumanInterfaceDevice__CHidDevice_Windows__CDevices__CHumanInterfaceDevice__CHidInputReportReceivedEventArgs handler;
+	hid_device* dev;
+} EventHandlerHIDInputReportReceived;
+
+static HRESULT STDMETHODCALLTYPE event_handler_hid_report_received_query_interface(__FITypedEventHandler_2_Windows__CDevices__CHumanInterfaceDevice__CHidDevice_Windows__CDevices__CHumanInterfaceDevice__CHidInputReportReceivedEventArgs* This,
+	REFIID riid,
+	void** ppvObject)
+{
+	if (!ppvObject) {
+		return E_INVALIDARG;
+	}
+
+	*ppvObject = NULL;
+	static const IID async_iid = { 0x31e757c8, 0x8f6a, 0x540b, { 0x93, 0x8b, 0xab, 0xa7, 0x9b, 0x6f, 0x03, 0xec } };
+	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &async_iid)) {
+		*ppvObject = This;
+		return S_OK;
+	}
+	return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE event_handler_hid_report_received_add_ref(__FITypedEventHandler_2_Windows__CDevices__CHumanInterfaceDevice__CHidDevice_Windows__CDevices__CHumanInterfaceDevice__CHidInputReportReceivedEventArgs* This)
+{
+	return 1;
+}
+
+static ULONG STDMETHODCALLTYPE event_handler_hid_report_received_release(__FITypedEventHandler_2_Windows__CDevices__CHumanInterfaceDevice__CHidDevice_Windows__CDevices__CHumanInterfaceDevice__CHidInputReportReceivedEventArgs* This)
+{
+	return 1;
+}
+
+static HRESULT STDMETHODCALLTYPE event_handler_hid_report_received_invoke(__FITypedEventHandler_2_Windows__CDevices__CHumanInterfaceDevice__CHidDevice_Windows__CDevices__CHumanInterfaceDevice__CHidInputReportReceivedEventArgs* This,
+	__x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidDevice* sender,
+	__x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidInputReportReceivedEventArgs* args)
+{
+	EventHandlerHIDInputReportReceived* handle = (EventHandlerHIDInputReportReceived*)This;
+	__x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidInputReport* input_report;
+	__x_ABI_CWindows_CStorage_CStreams_CIBuffer* buffer;
+	UINT32 buffer_len;
+	__x_ABI_CWindows_CStorage_CStreams_CIDataReader* data_reader;
+	args->lpVtbl->get_Report(args, &input_report);
+	input_report->lpVtbl->get_Data(input_report, &buffer);
+	WindowsStorageStreamsIDataReaderStatics->lpVtbl->FromBuffer(WindowsStorageStreamsIDataReaderStatics, buffer, &data_reader);
+	buffer->lpVtbl->get_Length(buffer, &buffer_len);
+	data_reader->lpVtbl->ReadBytes(data_reader, MIN(handle->dev->input_report_length, buffer_len), handle->dev->read_buf);
+
+	data_reader->lpVtbl->Release(data_reader);
+	buffer->lpVtbl->Release(buffer);
+	input_report->lpVtbl->Release(input_report);
+
+	handle->dev->read_pending = FALSE;
+	SetEvent(handle->dev->read_event);
+	return S_OK;
+}
+
+static EventHandlerHIDInputReportReceived* create_event_handler_hid_report_received(hid_device* dev)
+{
+	EventHandlerHIDInputReportReceived* ptr;
+	ptr = (EventHandlerHIDInputReportReceived*)calloc(1, sizeof(EventHandlerHIDInputReportReceived));
+	if (ptr)
+	{
+		ptr->handler.lpVtbl = (__FITypedEventHandler_2_Windows__CDevices__CHumanInterfaceDevice__CHidDevice_Windows__CDevices__CHumanInterfaceDevice__CHidInputReportReceivedEventArgsVtbl*)calloc(1, sizeof(__FITypedEventHandler_2_Windows__CDevices__CHumanInterfaceDevice__CHidDevice_Windows__CDevices__CHumanInterfaceDevice__CHidInputReportReceivedEventArgsVtbl));
+		if (ptr->handler.lpVtbl)
+		{
+			ptr->handler.lpVtbl->QueryInterface = event_handler_hid_report_received_query_interface;
+			ptr->handler.lpVtbl->AddRef = event_handler_hid_report_received_add_ref;
+			ptr->handler.lpVtbl->Release = event_handler_hid_report_received_release;
+			ptr->handler.lpVtbl->Invoke = event_handler_hid_report_received_invoke;
+			ptr->dev = dev;
+			return ptr;
+		}
+		else
+		{
+			free(ptr);
+		}
+	}
+	return NULL;
+}
+
+static void destroy_event_handler_hid_report_received(EventHandlerHIDInputReportReceived* ptr)
+{
+	free(ptr->handler.lpVtbl);
+	free(ptr);
+}
+
 static HANDLE open_device(const char *path, BOOL open_rw)
 {
 	HANDLE handle;
@@ -370,7 +576,10 @@ int HID_API_EXPORT hid_exit(void)
 #ifndef HIDAPI_USE_DDK
 	if (lib_handle)
 		FreeLibrary(lib_handle);
+	if (lib_handle1)
+		FreeLibrary(lib_handle1);
 	lib_handle = NULL;
+	lib_handle1 = NULL;
 	initialized = FALSE;
 #endif
 	return 0;
