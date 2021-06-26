@@ -1022,35 +1022,33 @@ int HID_API_EXPORT HID_API_CALL hid_set_nonblocking(hid_device *dev, int nonbloc
 
 int HID_API_EXPORT HID_API_CALL hid_send_feature_report(hid_device *dev, const unsigned char *data, size_t length)
 {
-	BOOL res = FALSE;
-	unsigned char *buf;
-	size_t length_to_send;
+	HRESULT hr;
+	UINT32 send_byte;
+	__x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidFeatureReport* feature_report;
+	__x_ABI_CWindows_CStorage_CStreams_CIDataWriter* data_writer;
+	__x_ABI_CWindows_CStorage_CStreams_CIBuffer* buffer;
+	__FIAsyncOperation_1_UINT32* async_operation;
+	AsyncOperationCompletedHandler* async_operation_complete_handler;
+	dev->device_handle->lpVtbl->CreateFeatureReportById(dev->device_handle, data[0], &feature_report);
+	data_writer = create_datawriter();
+	data_writer->lpVtbl->WriteBytes(data_writer, length, data);
+	data_writer->lpVtbl->DetachBuffer(data_writer, &buffer);
+	feature_report->lpVtbl->put_Data(feature_report, buffer);
+	dev->device_handle->lpVtbl->SendFeatureReportAsync(dev->device_handle, feature_report, &async_operation);
+	async_operation_complete_handler = create_complete_handle(&IIDAsyncOperationCompletedHandlerUint32);
+	async_operation->lpVtbl->put_Completed(async_operation, async_operation_complete_handler);
+	WaitForSingleObject(async_operation_complete_handler, INFINITE);
+	do
+	{
+		hr = async_operation->lpVtbl->GetResults(async_operation, &send_byte);
+	} while (!SUCCEEDED(hr));
+	destroy_complete_handle(async_operation_complete_handler);
+	async_operation->lpVtbl->Release(async_operation);
+	buffer->lpVtbl->Release(buffer);
+	data_writer->lpVtbl->Release(data_writer);
+	feature_report->lpVtbl->Release(feature_report);
 
-	/* Windows expects at least caps.FeatureReportByteLength bytes passed
-	   to HidD_SetFeature(), even if the report is shorter. Any less sent and
-	   the function fails with error ERROR_INVALID_PARAMETER set. Any more
-	   and HidD_SetFeature() silently truncates the data sent in the report
-	   to caps.FeatureReportByteLength. */
-	if (length >= dev->feature_report_length) {
-		buf = (unsigned char *) data;
-		length_to_send = length;
-	} else {
-		if (dev->feature_buf == NULL)
-			dev->feature_buf = (unsigned char *) malloc(dev->feature_report_length);
-		buf = dev->feature_buf;
-		memcpy(buf, data, length);
-		memset(buf + length, 0, dev->feature_report_length - length);
-		length_to_send = dev->feature_report_length;
-	}
-
-	res = HidD_SetFeature(dev->device_handle, (PVOID)buf, (DWORD) length_to_send);
-
-	if (!res) {
-		register_error(dev, "HidD_SetFeature");
-		return -1;
-	}
-
-	return (int) length;
+	return send_byte;
 }
 
 
