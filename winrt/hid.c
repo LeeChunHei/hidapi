@@ -964,79 +964,49 @@ int HID_API_EXPORT HID_API_CALL hid_write(hid_device *dev, const unsigned char *
 
 int HID_API_EXPORT HID_API_CALL hid_read_timeout(hid_device *dev, unsigned char *data, size_t length, int milliseconds)
 {
-	DWORD bytes_read = 0;
-	size_t copy_len = 0;
 	BOOL res = FALSE;
-	BOOL overlapped = FALSE;
+	size_t copy_len = 0;
+	__FIAsyncOperation_1_Windows__CDevices__CHumanInterfaceDevice__CHidInputReport* input_report;
 
-	/* Copy the handle for convenience. */
-	HANDLE ev = dev->ol.hEvent;
-
-	if (!dev->read_pending) {
-		/* Start an Overlapped I/O read. */
+	if (!dev->read_pending)
+	{
 		dev->read_pending = TRUE;
-		memset(dev->read_buf, 0, dev->input_report_length);
-		ResetEvent(ev);
-		res = ReadFile(dev->device_handle, dev->read_buf, (DWORD) dev->input_report_length, &bytes_read, &dev->ol);
-		
-		if (!res) {
-			if (GetLastError() != ERROR_IO_PENDING) {
-				/* ReadFile() has failed.
-				   Clean up and return error. */
-				CancelIo(dev->device_handle);
-				dev->read_pending = FALSE;
-				goto end_of_function;
-			}
-			overlapped = TRUE;	   
-		}																		   
-	}
-	else {
-		overlapped = TRUE;	
+		dev->read_len = 0;
+		ResetEvent(dev->read_event);
+		dev->device_handle->lpVtbl->GetInputReportAsync(dev->device_handle, &input_report);
 	}
 
-	if (overlapped) {
-		if (milliseconds >= 0) {
-			/* See if there is any data yet. */
-			res = WaitForSingleObject(ev, milliseconds);
-			if (res != WAIT_OBJECT_0) {
-				/* There was no data this time. Return zero bytes available,
-				   but leave the Overlapped I/O running. */
-				return 0;
-			}
+	if (milliseconds >= 0)
+	{
+		/* See if there is any data yet. */
+		res = WaitForSingleObject(dev->read_event, milliseconds);
+		if (res != WAIT_OBJECT_0) {
+			/* There was no data this time. Return zero bytes available,
+				but leave the Overlapped I/O running. */
+			return 0;
 		}
-
-		/* Either WaitForSingleObject() told us that ReadFile has completed, or
-		   we are in non-blocking mode. Get the number of bytes read. The actual
-		   data has been copied to the data[] array which was passed to ReadFile(). */
-		res = GetOverlappedResult(dev->device_handle, &dev->ol, &bytes_read, TRUE/*wait*/);
 	}
-	/* Set pending back to false, even if GetOverlappedResult() returned error. */
-	dev->read_pending = FALSE;
 
-	if (res && bytes_read > 0) {
-		if (dev->read_buf[0] == 0x0) {
+	if (dev->read_len > 0)
+	{
+		if (dev->read_buf[0] == 0x0)
+		{
 			/* If report numbers aren't being used, but Windows sticks a report
 			   number (0x0) on the beginning of the report anyway. To make this
 			   work like the other platforms, and to make it work more like the
 			   HID spec, we'll skip over this byte. */
-			bytes_read--;
-			copy_len = length > bytes_read ? bytes_read : length;
-			memcpy(data, dev->read_buf+1, copy_len);
+			dev->read_len--;
+			copy_len = MIN(dev->read_len, length);
+			memcpy(data, dev->read_buf + 1, copy_len);
 		}
 		else {
 			/* Copy the whole buffer, report number and all. */
-			copy_len = length > bytes_read ? bytes_read : length;
+			copy_len = MIN(dev->read_len, length);
 			memcpy(data, dev->read_buf, copy_len);
 		}
 	}
-	
-end_of_function:
-	if (!res) {
-		register_error(dev, "GetOverlappedResult");
-		return -1;
-	}
-	
-	return (int) copy_len;
+
+	return copy_len;
 }
 
 int HID_API_EXPORT HID_API_CALL hid_read(hid_device *dev, unsigned char *data, size_t length)
