@@ -67,6 +67,9 @@ extern "C" {
 
 #include "hidapi.h"
 
+#include "winrt/windows.devices.enumeration.h"
+#include "winrt/windows.devices.humaninterfacedevice.h"
+
 #undef MIN
 #define MIN(x,y) ((x) < (y)? (x): (y))
 
@@ -136,56 +139,82 @@ static struct hid_api_version api_version = {
 	static HidP_GetCaps_ HidP_GetCaps;
 	static HidD_SetNumInputBuffers_ HidD_SetNumInputBuffers;
 
+	// Ro initialization flags; passed to Windows::Runtime::Initialize
+	typedef enum RO_INIT_TYPE
+	{
+#pragma region Desktop Family
+#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
+		RO_INIT_SINGLETHREADED = 0,      // Single-threaded application
+#endif // WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
+		RO_INIT_MULTITHREADED = 1,      // COM calls objects on any thread.
+	} RO_INIT_TYPE;
+
+	typedef HRESULT(WINAPI* WindowsCreateStringReference_t)(PCWSTR sourceString, UINT32 length, HSTRING_HEADER* hstringHeader, HSTRING* string);
+	typedef HRESULT(WINAPI* WindowsDeleteString_t)(HSTRING string);
+	typedef PCWSTR(WINAPI* WindowsGetStringRawBuffer_t)(HSTRING string, UINT32* length);
+	typedef HRESULT(WINAPI* RoGetActivationFactory_t)(HSTRING activatableClassId, REFIID iid, void** factory);
+	typedef HRESULT(WINAPI* RoInitialize_t)(RO_INIT_TYPE initType);
+	typedef HRESULT(WINAPI* RoActivateInstance_t)(HSTRING activatableClassId, IInspectable** instance);
+
+	static WindowsCreateStringReference_t WindowsCreateStringReferenceFunc;
+	static WindowsGetStringRawBuffer_t WindowsGetStringRawBufferFunc;
+	static RoGetActivationFactory_t RoGetActivationFactoryFunc;
+	static RoInitialize_t RoInitializeFunc;
+	static RoActivateInstance_t RoActivateInstanceFunc;
+
+	static const IID IID___x_ABI_CWindows_CDevices_CEnumeration_CIDeviceInformationStatics = { 0xC17F100E, 0x3A46, 0x4A78, { 0x80, 0x13, 0x76, 0x9D, 0xC9, 0xB9, 0x73, 0x90 } };
+	static __x_ABI_CWindows_CDevices_CEnumeration_CIDeviceInformationStatics* WindowsDevicesEnumerationDeviceInformationStatics;
+	static const IID IID___x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidDeviceStatics = { 0x9E5981E4, 0x9856, 0x418C, { 0x9F, 0x73, 0x77, 0xDE, 0x0C, 0xD8, 0x57, 0x54 } };
+	static __x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidDeviceStatics* WindowsDevicesHumanInterfaceDeviceHidDeviceStatics;
+	static const IID IID___x_ABI_CWindows_CStorage_CStreams_CIDataReaderStatics = { 0x11FCBFC8, 0xF93A, 0x471B, { 0xB1, 0x21, 0xF3, 0x79, 0xE3, 0x49, 0x31, 0x3C } };
+	static __x_ABI_CWindows_CStorage_CStreams_CIDataReaderStatics* WindowsStorageStreamsIDataReaderStatics;
+
 	static HMODULE lib_handle = NULL;
+	static HMODULE lib_handle1 = NULL;
 	static BOOLEAN initialized = FALSE;
 #endif /* HIDAPI_USE_DDK */
 
 struct hid_device_ {
-		HANDLE device_handle;
-		BOOL blocking;
-		USHORT output_report_length;
-		unsigned char *write_buf;
-		size_t input_report_length;
-		USHORT feature_report_length;
-		unsigned char *feature_buf;
-		void *last_error_str;
-		DWORD last_error_num;
-		BOOL read_pending;
-		char *read_buf;
-		OVERLAPPED ol;
-		OVERLAPPED write_ol;			  
+	__x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidDevice* device_handle;
+	struct hid_device_info dev_info;
+	BOOL blocking;
+	USHORT output_report_length;
+	size_t input_report_length;
+	void* last_error_str;
+	DWORD last_error_num;
+	BOOL read_pending;
+	size_t read_len;
+	char* read_buf;
+	HANDLE read_event;
+	void* received_event_handle;
+	EventRegistrationToken read_event_token;
+	OVERLAPPED ol;
+	OVERLAPPED write_ol;
 };
 
 static hid_device *new_hid_device()
 {
-	hid_device *dev = (hid_device*) calloc(1, sizeof(hid_device));
-	dev->device_handle = INVALID_HANDLE_VALUE;
+	hid_device* dev = (hid_device*)calloc(1, sizeof(hid_device));
+	dev->device_handle = NULL;
+	memset(&dev->dev_info, 0, sizeof(struct hid_device_info));
 	dev->blocking = TRUE;
 	dev->output_report_length = 0;
-	dev->write_buf = NULL;
 	dev->input_report_length = 0;
-	dev->feature_report_length = 0;
-	dev->feature_buf = NULL;
 	dev->last_error_str = NULL;
 	dev->last_error_num = 0;
 	dev->read_pending = FALSE;
 	dev->read_buf = NULL;
-	memset(&dev->ol, 0, sizeof(dev->ol));
-	dev->ol.hEvent = CreateEvent(NULL, FALSE, FALSE /*initial state f=nonsignaled*/, NULL);
-	memset(&dev->write_ol, 0, sizeof(dev->write_ol));
-	dev->write_ol.hEvent = CreateEvent(NULL, FALSE, FALSE /*inital state f=nonsignaled*/, NULL);											  
+	dev->read_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+	dev->read_event_token.value = 0;
 
 	return dev;
 }
 
 static void free_hid_device(hid_device *dev)
 {
-	CloseHandle(dev->ol.hEvent);
-	CloseHandle(dev->write_ol.hEvent);							   
-	CloseHandle(dev->device_handle);
+	CloseHandle(dev->read_event);
+	dev->device_handle->lpVtbl->Release(dev->device_handle);
 	LocalFree(dev->last_error_str);
-	free(dev->write_buf);
-	free(dev->feature_buf);
 	free(dev->read_buf);
 	free(dev);
 }
@@ -224,7 +253,8 @@ static void register_error(hid_device *dev, const char *op)
 static int lookup_functions()
 {
 	lib_handle = LoadLibraryA("hid.dll");
-	if (lib_handle) {
+	lib_handle1 = LoadLibraryA("combase.dll");
+	if (lib_handle && lib_handle1) {
 #if defined(__GNUC__)
 # pragma GCC diagnostic push
 # pragma GCC diagnostic ignored "-Wcast-function-type"
@@ -243,10 +273,50 @@ static int lookup_functions()
 		RESOLVE(HidP_GetCaps);
 		RESOLVE(HidD_SetNumInputBuffers);
 #undef RESOLVE
+#define RESOLVE(x) x##Func = (x##_t)GetProcAddress(lib_handle1, #x); if (!x##Func) return -1;
+		RESOLVE(WindowsCreateStringReference);
+		RESOLVE(WindowsGetStringRawBuffer);
+		RESOLVE(RoGetActivationFactory);
+		RESOLVE(RoInitialize);
+		RESOLVE(RoActivateInstance);
+		if (WindowsCreateStringReferenceFunc && RoGetActivationFactoryFunc && RoInitializeFunc) {
+			RoInitializeFunc(RO_INIT_MULTITHREADED);
+
+			HRESULT hr;
+			PCWSTR namespace;
+			HSTRING_HEADER namespace_string_header;
+			HSTRING namespace_string;
+
+			namespace = L"Windows.Devices.Enumeration.DeviceInformation";
+			hr = WindowsCreateStringReferenceFunc(namespace, (UINT32)wcslen(namespace), &namespace_string_header, &namespace_string);
+			if (SUCCEEDED(hr)) {
+				hr = RoGetActivationFactoryFunc(namespace_string, &IID___x_ABI_CWindows_CDevices_CEnumeration_CIDeviceInformationStatics, &WindowsDevicesEnumerationDeviceInformationStatics);
+				if (!SUCCEEDED(hr)) {
+					printf("Couldn't find Windows.Devices.Enumeration.DeviceInformation: 0x%x\n", hr);
+				}
+			}
+			namespace = L"Windows.Devices.HumanInterfaceDevice.HidDevice";
+			hr = WindowsCreateStringReferenceFunc(namespace, (UINT32)wcslen(namespace), &namespace_string_header, &namespace_string);
+			if (SUCCEEDED(hr)) {
+				hr = RoGetActivationFactoryFunc(namespace_string, &IID___x_ABI_CWindows_CDevices_CHumanInterfaceDevice_CIHidDeviceStatics, &WindowsDevicesHumanInterfaceDeviceHidDeviceStatics);
+				if (!SUCCEEDED(hr)) {
+					printf("Couldn't find Windows.Devices.HumanInterfaceDevice.HidDevice: 0x%x\n", hr);
+				}
+			}
+			namespace = L"Windows.Storage.Streams.DataReader";
+			hr = WindowsCreateStringReferenceFunc(namespace, (UINT32)wcslen(namespace), &namespace_string_header, &namespace_string);
+			if (SUCCEEDED(hr)) {
+				hr = RoGetActivationFactoryFunc(namespace_string, &IID___x_ABI_CWindows_CStorage_CStreams_CIDataReaderStatics, &WindowsStorageStreamsIDataReaderStatics);
+				if (!SUCCEEDED(hr)) {
+					printf("Couldn't find Windows.Storage.Streams.DataReader: 0x%x\n", hr);
+				}
+			}
+		}
+#undef RESOLVE
 #if defined(__GNUC__)
 # pragma GCC diagnostic pop
 #endif
-	}
+}
 	else
 		return -1;
 
