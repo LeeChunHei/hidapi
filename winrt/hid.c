@@ -1088,105 +1088,76 @@ int HID_API_EXPORT HID_API_CALL hid_get_feature_report(hid_device *dev, unsigned
 
 int HID_API_EXPORT HID_API_CALL hid_get_input_report(hid_device *dev, unsigned char *data, size_t length)
 {
-	BOOL res;
-#if 0
-	res = HidD_GetInputReport(dev->device_handle, data, length);
-	if (!res) {
-		register_error(dev, "HidD_GetInputReport");
-		return -1;
+	BOOL res = FALSE;
+	size_t copy_len = 0;
+	__FIAsyncOperation_1_Windows__CDevices__CHumanInterfaceDevice__CHidInputReport* input_report;
+
+	if (!dev->read_pending)
+	{
+		dev->read_pending = TRUE;
+		dev->read_len = 0;
+		ResetEvent(dev->read_event);
+		dev->device_handle->lpVtbl->GetInputReportByIdAsync(dev->device_handle, data[0], &input_report);
 	}
-	return length;
-#else
-	DWORD bytes_returned;
 
-	OVERLAPPED ol;
-	memset(&ol, 0, sizeof(ol));
+	/* See if there is any data yet. */
+	res = WaitForSingleObject(dev->read_event, INFINITE);
+	if (res != WAIT_OBJECT_0) {
+		/* There was no data this time. Return zero bytes available,
+			but leave the Overlapped I/O running. */
+		return 0;
+	}
 
-	res = DeviceIoControl(dev->device_handle,
-		IOCTL_HID_GET_INPUT_REPORT,
-		data, (DWORD) length,
-		data, (DWORD) length,
-		&bytes_returned, &ol);
-
-	if (!res) {
-		if (GetLastError() != ERROR_IO_PENDING) {
-			/* DeviceIoControl() failed. Return error. */
-			register_error(dev, "Send Input Report DeviceIoControl");
-			return -1;
+	if (dev->read_len > 0)
+	{
+		if (dev->read_buf[0] == 0x0)
+		{
+			/* If report numbers aren't being used, but Windows sticks a report
+			   number (0x0) on the beginning of the report anyway. To make this
+			   work like the other platforms, and to make it work more like the
+			   HID spec, we'll skip over this byte. */
+			dev->read_len--;
+			copy_len = MIN(dev->read_len, length);
+			memcpy(data, dev->read_buf + 1, copy_len);
+		}
+		else {
+			/* Copy the whole buffer, report number and all. */
+			copy_len = MIN(dev->read_len, length);
+			memcpy(data, dev->read_buf, copy_len);
 		}
 	}
-
-	/* Wait here until the write is done. This makes
-	   hid_get_feature_report() synchronous. */
-	res = GetOverlappedResult(dev->device_handle, &ol, &bytes_returned, TRUE/*wait*/);
-	if (!res) {
-		/* The operation failed. */
-		register_error(dev, "Send Input Report GetOverLappedResult");
-		return -1;
-	}
-
-	return bytes_returned;
-#endif
+	return copy_len;
 }
 
 void HID_API_EXPORT HID_API_CALL hid_close(hid_device *dev)
 {
 	if (!dev)
 		return;
-	CancelIo(dev->device_handle);
 	free_hid_device(dev);
 }
 
 int HID_API_EXPORT_CALL HID_API_CALL hid_get_manufacturer_string(hid_device *dev, wchar_t *string, size_t maxlen)
 {
-	BOOL res;
-
-	res = HidD_GetManufacturerString(dev->device_handle, string, sizeof(wchar_t) * (DWORD) MIN(maxlen, MAX_STRING_WCHARS));
-	if (!res) {
-		register_error(dev, "HidD_GetManufacturerString");
-		return -1;
-	}
-
+	memcpy(string, dev->dev_info.manufacturer_string, sizeof(wchar_t) * MIN(wcslen(dev->dev_info.manufacturer_string), maxlen));
 	return 0;
 }
 
 int HID_API_EXPORT_CALL HID_API_CALL hid_get_product_string(hid_device *dev, wchar_t *string, size_t maxlen)
 {
-	BOOL res;
-
-	res = HidD_GetProductString(dev->device_handle, string, sizeof(wchar_t) * (DWORD) MIN(maxlen, MAX_STRING_WCHARS));
-	if (!res) {
-		register_error(dev, "HidD_GetProductString");
-		return -1;
-	}
-
+	memcpy(string, dev->dev_info.product_string, sizeof(wchar_t) * MIN(wcslen(dev->dev_info.product_string), maxlen));
 	return 0;
 }
 
 int HID_API_EXPORT_CALL HID_API_CALL hid_get_serial_number_string(hid_device *dev, wchar_t *string, size_t maxlen)
 {
-	BOOL res;
-
-	res = HidD_GetSerialNumberString(dev->device_handle, string, sizeof(wchar_t) * (DWORD) MIN(maxlen, MAX_STRING_WCHARS));
-	if (!res) {
-		register_error(dev, "HidD_GetSerialNumberString");
-		return -1;
-	}
-
+	memcpy(string, dev->dev_info.serial_number, sizeof(wchar_t) * MIN(wcslen(dev->dev_info.serial_number), maxlen));
 	return 0;
 }
 
 int HID_API_EXPORT_CALL HID_API_CALL hid_get_indexed_string(hid_device *dev, int string_index, wchar_t *string, size_t maxlen)
 {
-	BOOL res;
-
-	res = HidD_GetIndexedString(dev->device_handle, string_index, string, sizeof(wchar_t) * (DWORD) MIN(maxlen, MAX_STRING_WCHARS));
-	if (!res) {
-		register_error(dev, "HidD_GetIndexedString");
-		return -1;
-	}
-
-	return 0;
+	//TODO: don't know which winrt API fit
+	return -1;
 }
 
 
